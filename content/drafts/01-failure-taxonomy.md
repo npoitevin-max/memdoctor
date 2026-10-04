@@ -87,6 +87,21 @@ Reporting success because the build passed, because the process is running, beca
 
 The discipline that fixes it: verify the *effect*, not the *action*. Read the value back. Hash the file before and after. Check that the write is visible to a reader that isn't the writer. If you can't observe the effect, you don't get to say it worked.
 
+Here is what that looks like in practice, because it is easy to nod along and hard to actually do.
+
+I spent an evening building `memdoctor`, the tool I wrote for class #1. Its test suite passed at every step — 23 tests, then 33, then 38 — and the agent implementing it reported success each time, accurately, in good faith.
+
+Four things were wrong anyway:
+
+1. **The orphaned-vector check only implemented half its own definition.** A vector row with no matching memory row was silently discarded. Orphaned vectors are the single most-documented corruption in this whole taxonomy, and the tool built to catch them was blind to them. Twenty-three tests were green.
+2. **Backend detection returned `json` whenever a directory contained any stray `.jsonl` file** — checked *before* it ever tried SQLite. So after `fix` wrote its quarantine file next to the store, `check` could no longer read back the store it had just repaired.
+3. **The JSON backend then read that quarantine file as user memory**, reporting the tool's own output as a corrupted memory belonging to the user.
+4. **`fix` deleted a degenerate vector but left the memory flagged as embedded** — which is the *other* shape of the same check. The repair manufactured the next problem, so `fix` could never converge. Running it made the issue count go *up*.
+
+Every one of those was found the same way: build a store by hand, run the real workflow end to end, and read the actual bytes. Not one was found by a test that passed.
+
+That is the whole argument. A passing test tells you the code does what someone believed when they wrote the test. It cannot tell you the belief was wrong.
+
 ---
 
 ## What actually helps
