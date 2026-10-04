@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# memdoctor artifacts
+*.memdoctor-backup-*
+memdoctor-backup-*
+.quarantine/
+
+# OpenCode
+.opencode/node_modules/
+.opencode/build.log
+
+# macOS
+.DS_Store

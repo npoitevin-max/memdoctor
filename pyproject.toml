@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memdoctor"
+version = "0.1.0"
+description = "Check and repair AI agent long-term memory stores"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "memdoctor" }]
+dependencies = []
+
+[project.optional-dependencies]
+sqlite-vec = ["sqlite-vec"]
+
+[project.scripts]
+memdoctor = "memdoctor.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["memdoctor*"]
