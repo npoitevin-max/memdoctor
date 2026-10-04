@@ -17,6 +17,7 @@ memdoctor-backup-*
 # OpenCode
 .opencode/node_modules/
 .opencode/build.log
+.opencode/task-*.md
 
 # macOS
 .DS_Store

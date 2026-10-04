@@ -6,20 +6,38 @@
 
 ```
 $ memdoctor check ./memory/
-memdoctor v0.1.0 — sqlite-vec backend
+memdoctor v0.1.0 — sqlite backend
 
-  store        ./memory/memories.db
-  memories     12,480 rows
-  vectors      12,483 rows
+  store        ./memory/
+  memories     12480
+  vectors      12482
 
-  ✗ D1  orphaned vectors .................. 3 found
-         vec row exists with no memory row (ids: 9912, 10455, 12031)
-  ✗ D5  degenerate vectors ................ 1 found
-         vec id 7741 is all-zero (poisoned or failed embed)
-  ! D4  missing required fields ........... 17 found
-         17 rows with NULL content
+  ✗ D1 orphaned vectors..................... 4 found
+         ids: m09000, ghost-9912, ghost-9913
+  ! D4 missing required fields.............. 2 found
+         ids: m00210, m00444
+  ✗ D5 degenerate vectors................... 1 found
+         ids: m07741
 
-  20 issue(s) found in 2.1s. Run `memdoctor fix ./memory/` to repair.
+  7 issue(s) found in 0.4s. Run `memdoctor fix ./memory/` to repair.
+```
+
+`fix` quarantines what it removes before removing it, snapshots the store first, and never
+touches memory content:
+
+```
+$ memdoctor fix ./memory/
+memdoctor fix — sqlite backend
+
+  backup       ./memory/memories.db.memdoctor-backup-2026-10-04T124003661024Z
+  quarantine   ./memory/memories.db.memdoctor-quarantine.jsonl
+
+  removed orphaned_vector      rowid=99001 id=ghost-9912  vector row has no matching memory row
+  removed degenerate_vector    rowid=7742  id=m07741      embedding is all-zero, non-finite, or has zero norm
+  marked unembedded            id=m07741  no vector remains; needs re-embedding
+
+  not automatically repairable:
+    orphaned_vector id=m09000  memory marked as embedded but has no embedding
 ```
 
 ## The problem

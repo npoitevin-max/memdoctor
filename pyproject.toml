@@ -9,8 +9,22 @@ description = "Check and repair AI agent long-term memory stores"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "memdoctor" }]
+authors = [{ name = "Nicolas Poitevin" }]
+keywords = ["ai-agents", "llm", "agent-memory", "vector-database", "sqlite-vec", "observability"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Database",
+    "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/npoitevin-max/memdoctor"
+Repository = "https://github.com/npoitevin-max/memdoctor"
+Issues = "https://github.com/npoitevin-max/memdoctor/issues"
 
 [project.optional-dependencies]
 sqlite-vec = ["sqlite-vec"]
