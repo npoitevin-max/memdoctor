@@ -88,7 +88,9 @@ def _build_store(path: str, backend: str) -> MemoryStore:
     if backend == "json":
         return JsonDirStore(path)
     if backend == "sqlite":
-        raise BackendError("the SQLite backend is not implemented in this step; use a JSON/JSONL store")
+        from .backends.sqlite_vec import SqliteVecStore
+
+        return SqliteVecStore(path)
     raise BackendError(f"unknown backend: {backend}")
 
 
