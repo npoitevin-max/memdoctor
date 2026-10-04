@@ -26,13 +26,19 @@ def modal_dimension(memories: list[Memory]) -> int | None:
     return lengths.most_common(1)[0][0]
 
 
-def check_orphaned_vectors(memories: list[Memory]) -> list[Issue]:
+def check_orphaned_vectors(
+    memories: list[Memory], orphan_vector_ids: Iterable[str] = ()
+) -> list[Issue]:
     issues: list[Issue] = []
     for m in memories:
         if m.embedded and m.embedding is None:
             issues.append(
                 Issue("orphaned_vector", Severity.ERROR, m.id, "memory marked as embedded but has no embedding")
             )
+    for orphan_id in orphan_vector_ids:
+        issues.append(
+            Issue("orphaned_vector", Severity.ERROR, orphan_id, "vector row has no matching memory row")
+        )
     return issues
 
 
@@ -92,14 +98,18 @@ def check_degenerate_vectors(memories: list[Memory]) -> list[Issue]:
     return issues
 
 
-def run_checks(memories: Iterable[Memory], dimension: int | None = None) -> list[Issue]:
+def run_checks(
+    memories: Iterable[Memory],
+    dimension: int | None = None,
+    orphan_vector_ids: Iterable[str] = (),
+) -> list[Issue]:
     """Run all detection checks, returning every issue found."""
     mems = list(memories)
     if dimension is None:
         dimension = modal_dimension(mems)
 
     issues: list[Issue] = []
-    issues.extend(check_orphaned_vectors(mems))
+    issues.extend(check_orphaned_vectors(mems, orphan_vector_ids))
     issues.extend(check_duplicate_ids(mems))
     issues.extend(check_dimensions(mems, dimension))
     issues.extend(check_missing_fields(mems))

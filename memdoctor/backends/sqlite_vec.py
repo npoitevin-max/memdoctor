@@ -174,6 +174,8 @@ class SqliteVecStore(MemoryStore):
         self._memory_table = ""
         self.dimension: int | None = None
         self._table_count = 0
+        self._vector_count = 0
+        self._orphan_vector_ids: list[str] = []
         self._load()
 
     def _load(self) -> None:
@@ -209,18 +211,27 @@ class SqliteVecStore(MemoryStore):
             f"SELECT {col_sql} FROM {_quote_ident(self._memory_table)} ORDER BY id"
         ).fetchall()
 
+        memory_ids = {
+            mem_id for mem_id in (_id_str(row[0]) for row in mem_rows) if mem_id is not None
+        }
+
         embeddings: dict[str, list[float] | None] = {}
+        vector_ids: set[str] = set()
         try:
             vec_rows = conn.execute(
                 f"SELECT id, embedding FROM {_quote_ident(self._vec_table)}"
             ).fetchall()
         except sqlite3.Error as exc:
             raise BackendError(f"cannot read vector table {self._vec_table}: {exc}") from exc
+        self._vector_count = len(vec_rows)
         for vid, blob in vec_rows:
             key = _id_str(vid)
             if key is None:
                 continue
+            vector_ids.add(key)
             embeddings[key] = _decode_blob(blob)
+
+        self._orphan_vector_ids = sorted(vector_ids - memory_ids)
 
         for row in mem_rows:
             values = dict(zip(select, row))
@@ -243,10 +254,14 @@ class SqliteVecStore(MemoryStore):
     def iter_memories(self) -> Iterator[Memory]:
         yield from self._memories
 
+    def orphan_vector_ids(self) -> list[str]:
+        return list(self._orphan_vector_ids)
+
     def stats(self) -> dict[str, int]:
         return {
             "memories": len(self._memories),
-            "vectors": sum(1 for m in self._memories if m.embedding is not None),
+            "vectors": self._vector_count,
+            "orphan_vectors": len(self._orphan_vector_ids),
             "tables": self._table_count,
         }
 

@@ -30,6 +30,13 @@ class MemoryStore(ABC):
     def stats(self) -> dict[str, int]:
         """Return counts for the store (e.g. memories, vectors, files)."""
 
+    def orphan_vector_ids(self) -> list[str]:
+        """Vector ids with no matching memory row.
+
+        Backends whose vectors are stored separately from memories override this.
+        """
+        return []
+
     def backend_issues(self) -> list[Issue]:
         """Backend-specific structural issues (e.g. malformed input)."""
         return []

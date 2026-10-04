@@ -19,6 +19,7 @@ from memdoctor.backends.sqlite_vec import (
 )
 from memdoctor.checks import run_checks
 from memdoctor.cli import main
+from memdoctor.model import Severity
 
 
 def _vec_blob(vec: list[float]) -> bytes:
@@ -150,6 +151,32 @@ def test_missing_field_detected(corrupted):
 
 def test_degenerate_vector_detected(corrupted):
     assert _ids(SqliteVecStore(corrupted), "degenerate_vector") == ["zero"]
+
+
+def test_orphan_vector_without_memory_detected(tmp_path):
+    db = build_store(
+        tmp_path,
+        memories=[{"id": "a", "content": "hello a", "created_at": "2024-01-01T00:00:00Z"}],
+        embeddings={"a": [1.0, 2.0, 3.0, 4.0], "ghost": [5.0, 6.0, 7.0, 8.0]},
+    )
+    store = SqliteVecStore(db)
+    assert store.orphan_vector_ids() == ["ghost"]
+    issues = run_checks(store.iter_memories(), orphan_vector_ids=store.orphan_vector_ids())
+    orphan = [i for i in issues if i.code == "orphaned_vector"]
+    assert [i.id for i in orphan] == ["ghost"]
+    assert orphan[0].severity == Severity.ERROR
+    assert orphan[0].detail == "vector row has no matching memory row"
+
+
+def test_stats_vectors_counts_true_vector_rows_with_orphan(tmp_path):
+    db = build_store(
+        tmp_path,
+        memories=[{"id": "a", "content": "hello a", "created_at": "2024-01-01T00:00:00Z"}],
+        embeddings={"a": [1.0, 2.0, 3.0, 4.0], "ghost": [5.0, 6.0, 7.0, 8.0]},
+    )
+    stats = SqliteVecStore(db).stats()
+    assert stats["vectors"] == 2
+    assert stats["orphan_vectors"] == 1
 
 
 # -- clean store / false positives --------------------------------------

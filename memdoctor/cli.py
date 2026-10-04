@@ -100,7 +100,13 @@ def _cmd_check(args: argparse.Namespace) -> int:
     store = _build_store(args.path, backend)
 
     issues = list(store.backend_issues())
-    issues.extend(run_checks(store.iter_memories(), dimension=args.dim))
+    issues.extend(
+        run_checks(
+            store.iter_memories(),
+            dimension=args.dim,
+            orphan_vector_ids=store.orphan_vector_ids(),
+        )
+    )
     duration_ms = (time.perf_counter() - start) * 1000.0
 
     report = Report(
