@@ -48,7 +48,7 @@ Support a directory of `.json` (list of memory objects) and `.jsonl` (one object
 ## Repair safety rules
 
 1. `fix` takes the path, resolves it, and writes a timestamped snapshot next to the store before any mutation (`<store>.memdoctor-backup-<UTC ISO8601>`). If the snapshot fails, abort without modifying anything.
-2. Never delete a memory row. Ever.
+2. Never delete a memory row, and never write a memory row's `content`, `id` or `created_at`. The one permitted exception: after `fix` removes a memory's vector, set that memory's `embedded` flag to `0`. The flag is derived from vector presence and would otherwise report a phantom issue forever.
 3. Quarantine rather than delete where a vector could be regenerated.
 4. `--dry-run` prints the exact planned mutations and exits without writing.
 5. Every mutation is logged with the row id and reason, and the log is written to stdout in a summary.

@@ -189,6 +189,146 @@ def test_fix_leaves_a_valid_sqlite_database(fixable, capsys):
         conn.close()
 
 
+# -- embedded flag ------------------------------------------------------
+
+
+def build_embedded_degenerate(root: Path) -> Path:
+    """A memory marked embedded whose vector is degenerate (the phantom-D1 case)."""
+    db = root / "memories.db"
+    conn = sqlite3.connect(str(db))
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.execute("CREATE VIRTUAL TABLE vec_memories USING vec0(id TEXT, embedding FLOAT[4])")
+    conn.execute("CREATE TABLE memories (id TEXT, content TEXT, created_at TEXT, embedded INTEGER)")
+    conn.execute(
+        "INSERT INTO memories (id, content, created_at, embedded) VALUES (?, ?, ?, ?)",
+        ("c", "degenerate memory", "2024-01-01T00:00:00Z", 1),
+    )
+    conn.execute(
+        "INSERT INTO memories (id, content, created_at, embedded) VALUES (?, ?, ?, ?)",
+        ("fine", "fine memory", "2024-01-02T00:00:00Z", 0),
+    )
+    conn.execute(
+        "INSERT INTO vec_memories (id, embedding) VALUES (?, ?)",
+        ("c", _vec_blob([0.0, 0.0, 0.0, 0.0])),
+    )
+    conn.execute(
+        "INSERT INTO vec_memories (id, embedding) VALUES (?, ?)",
+        ("fine", _vec_blob([1.0, 2.0, 3.0, 4.0])),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def _embedded_value(db: Path, mem_id: str) -> object:
+    conn = sqlite3.connect(str(db))
+    try:
+        return conn.execute(
+            "SELECT embedded FROM memories WHERE id = ?", (mem_id,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_fix_clears_embedded_flag_and_check_reports_no_d1(tmp_path, capsys):
+    db = build_embedded_degenerate(tmp_path)
+    code = main(["fix", str(db)])
+    assert code == 0
+    assert _embedded_value(db, "c") == 0
+
+    check_code = main(["check", str(db)])
+    out = capsys.readouterr().out
+    assert check_code == 0
+    assert "no issues found" in out
+
+
+def test_fix_preserves_content_id_created_at(tmp_path, capsys):
+    db = build_embedded_degenerate(tmp_path)
+    conn = sqlite3.connect(str(db))
+    before = conn.execute(
+        "SELECT id, content, created_at FROM memories WHERE id = 'c'"
+    ).fetchone()
+    conn.close()
+
+    code = main(["fix", str(db)])
+    assert code == 0
+
+    conn = sqlite3.connect(str(db))
+    after = conn.execute(
+        "SELECT id, content, created_at FROM memories WHERE id = 'c'"
+    ).fetchone()
+    conn.close()
+    assert after == ("c", "degenerate memory", "2024-01-01T00:00:00Z")
+    assert before == after
+
+
+def test_fix_embedded_degenerate_keeps_memory_row_count(tmp_path, capsys):
+    db = build_embedded_degenerate(tmp_path)
+    before = _memory_count(db)
+    code = main(["fix", str(db)])
+    assert code == 0
+    assert _memory_count(db) == before
+
+
+def test_dry_run_reports_planned_unembed_and_writes_nothing(tmp_path, capsys):
+    db = build_embedded_degenerate(tmp_path)
+    before = _digest(db)
+    code = main(["fix", "--dry-run", str(db)])
+    out = capsys.readouterr().out
+    after = _digest(db)
+    assert code == 0
+    assert before == after
+    assert _backups(db.parent) == []
+    assert _quarantines(db.parent) == []
+    assert "would mark unembedded" in out
+    assert "id=c" in out
+
+
+def test_fix_failed_transaction_rolls_back_delete_and_flag(tmp_path, capsys):
+    db = build_embedded_degenerate(tmp_path)
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TRIGGER fail_unembed BEFORE UPDATE OF embedded ON memories "
+        "BEGIN SELECT RAISE(FAIL, 'boom'); END"
+    )
+    conn.commit()
+    conn.close()
+    before = _digest(db)
+
+    with pytest.raises(sqlite3.Error):
+        main(["fix", str(db)])
+
+    assert _digest(db) == before
+
+
+def test_fix_without_embedded_column_still_fixes(tmp_path, capsys):
+    db = tmp_path / "memories.db"
+    conn = sqlite3.connect(str(db))
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.execute("CREATE VIRTUAL TABLE vec_memories USING vec0(id TEXT, embedding FLOAT[4])")
+    conn.execute("CREATE TABLE memories (id TEXT, content TEXT, created_at TEXT)")
+    conn.execute(
+        "INSERT INTO memories (id, content, created_at) VALUES (?, ?, ?)",
+        ("c", "degenerate memory", "2024-01-01T00:00:00Z"),
+    )
+    conn.execute(
+        "INSERT INTO vec_memories (id, embedding) VALUES (?, ?)",
+        ("c", _vec_blob([0.0, 0.0, 0.0, 0.0])),
+    )
+    conn.commit()
+    conn.close()
+
+    code = main(["fix", str(db)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "no `embedded` column" in out
+
+    check_code = main(["check", str(db)])
+    assert check_code == 0
+
+
 # -- json backend -------------------------------------------------------
 
 

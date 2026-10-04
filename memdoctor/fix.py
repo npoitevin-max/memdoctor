@@ -8,7 +8,9 @@ dominant concern:
 * quarantine every removed vector row before deleting it;
 * apply all mutations inside a single SQLite transaction that rolls back on
   any failure;
-* never touch a memory row.
+* never write a memory row's ``content``, ``id`` or ``created_at`` — the only
+  permitted write to a memory row is clearing its ``embedded`` flag when
+  ``fix`` removes that memory's vector.
 
 Only the SQLite backend is supported in v0.1, and only two repairs are safe:
 
@@ -31,6 +33,7 @@ from .backends.base import BackendError
 from .backends.sqlite_vec import (
     _MISSING_MSG,
     _candidate_memory_tables,
+    _columns,
     _decode_blob,
     _find_vec_table,
     _id_str,
@@ -69,6 +72,16 @@ class Mutation:
         )
 
 
+@dataclass
+class Plan:
+    """The vec-table name, memory-table shape, and safe removals for ``db``."""
+
+    vec_table: str
+    mem_table: str
+    has_embedded: bool
+    mutations: list[Mutation]
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -99,8 +112,8 @@ def _open_rw(db: Path) -> sqlite3.Connection:
     return conn
 
 
-def _plan(db: Path) -> tuple[str, list[Mutation]]:
-    """Return the vec-table name and the safe vector-row removals for ``db``."""
+def _plan(db: Path) -> Plan:
+    """Return the safe vector-row removals for ``db`` and its memory-table shape."""
     conn = _open_readonly(db)
     try:
         rows = _read_master(conn, db)
@@ -113,6 +126,7 @@ def _plan(db: Path) -> tuple[str, list[Mutation]]:
         vec_name = vec_table["name"]
         candidates = _candidate_memory_tables(conn, rows, vec_name)
         mem_table = _select_memory_table(candidates, db)
+        has_embedded = "embedded" in _columns(conn, mem_table)
 
         mem_ids = {
             mid
@@ -154,7 +168,12 @@ def _plan(db: Path) -> tuple[str, list[Mutation]]:
                         reason="embedding is all-zero, non-finite, or has zero norm",
                     )
                 )
-        return vec_name, mutations
+        return Plan(
+            vec_table=vec_name,
+            mem_table=mem_table,
+            has_embedded=has_embedded,
+            mutations=mutations,
+        )
     finally:
         conn.close()
 
@@ -186,7 +205,13 @@ def _write_quarantine(path: Path, mutations: list[Mutation]) -> None:
         raise BackendError(f"cannot write quarantine file {path}: {exc}") from exc
 
 
-def _delete_rows(db: Path, vec_name: str, mutations: list[Mutation]) -> None:
+def _delete_rows(
+    db: Path,
+    vec_name: str,
+    mem_table: str,
+    has_embedded: bool,
+    mutations: list[Mutation],
+) -> None:
     conn = _open_rw(db)
     try:
         conn.execute("BEGIN")
@@ -196,6 +221,11 @@ def _delete_rows(db: Path, vec_name: str, mutations: list[Mutation]) -> None:
                     f"DELETE FROM {_quote_ident(vec_name)} WHERE rowid = ?",
                     (mutation.rowid,),
                 )
+                if has_embedded and mutation.code == "degenerate_vector":
+                    conn.execute(
+                        f"UPDATE {_quote_ident(mem_table)} SET embedded = 0 WHERE id = ?",
+                        (mutation.vec_id,),
+                    )
         except BaseException:
             conn.execute("ROLLBACK")
             raise
@@ -224,7 +254,7 @@ def _report_only_issues(issues: list[Issue]) -> list[Issue]:
 
 def _print_result(
     db: Path,
-    mutations: list[Mutation],
+    plan: Plan,
     report_only: list[Issue],
     backup: Path | None,
     quarantine: Path | None,
@@ -241,13 +271,22 @@ def _print_result(
             print(f"  quarantine   {quarantine}")
     print()
 
-    if mutations:
-        for mutation in mutations:
+    if plan.mutations:
+        for mutation in plan.mutations:
             verb = "would remove" if dry_run else "removed"
             print(
                 f"  {verb} {mutation.code:<20} rowid={mutation.rowid} "
                 f"id={mutation.vec_id}  {mutation.reason}"
             )
+            if mutation.code == "degenerate_vector":
+                if plan.has_embedded:
+                    uverb = "would mark unembedded" if dry_run else "marked unembedded"
+                    print(
+                        f"  {uverb:<22} id={mutation.vec_id}  "
+                        f"no vector remains; needs re-embedding"
+                    )
+                else:
+                    print("  (memory table has no `embedded` column; flag not updated)")
     else:
         print("  nothing to repair")
     print()
@@ -277,26 +316,28 @@ def repair_sqlite(
     )
     report_only = _report_only_issues(issues)
 
-    vec_name, mutations = _plan(db)
+    plan = _plan(db)
 
-    if not mutations:
-        _print_result(db, mutations, report_only, None, None, dry_run)
+    if not plan.mutations:
+        _print_result(db, plan, report_only, None, None, dry_run)
         return 0
 
     if dry_run:
-        _print_result(db, mutations, report_only, None, None, dry_run)
+        _print_result(db, plan, report_only, None, None, dry_run)
         return 0
 
     backup = _snapshot(db)
     quarantine = _quarantine_path(db, quarantine_dir)
-    _write_quarantine(quarantine, mutations)
+    _write_quarantine(quarantine, plan.mutations)
     try:
-        _delete_rows(db, vec_name, mutations)
+        _delete_rows(
+            db, plan.vec_table, plan.mem_table, plan.has_embedded, plan.mutations
+        )
     except BaseException:
         _remove_if_exists(quarantine)
         raise
 
-    _print_result(db, mutations, report_only, backup, quarantine, dry_run)
+    _print_result(db, plan, report_only, backup, quarantine, dry_run)
     return 0
 
 

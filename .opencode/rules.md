@@ -6,7 +6,7 @@ Read `docs/SPEC.md` before implementing anything. It is the authoritative scope.
 
 1. **`check` never writes.** Any code path that opens a store in `check` mode must be read-only (SQLite: open with `mode=ro` URI). There is a test for this — do not break it.
 2. **`fix` snapshots first.** If the snapshot cannot be written, abort before mutating anything.
-3. **Never delete a memory row.** Vectors may be deleted or quarantined; memories are only ever reported.
+3. **Never delete a memory row, and never write a memory row's `content`, `id` or `created_at`.** The single permitted write to a memory row is setting the `embedded` flag to `0` for a memory whose vector `fix` has just removed — that flag is derived from vector presence, and leaving it set would report a phantom issue forever. Vectors may be deleted or quarantined; memory content is only ever reported.
 4. **No network access, no telemetry, no daemon.**
 5. **Five detection classes only.** Do not add D6+ without an explicit instruction.
 
