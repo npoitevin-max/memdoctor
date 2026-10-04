@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--backend", choices=["auto", "json", "sqlite"], default="auto")
     check.add_argument("--dim", type=int, default=None, metavar="N", help="expected embedding dimension")
 
-    fix = sub.add_parser("fix", help="repair the store (not implemented in this step)")
+    fix = sub.add_parser("fix", help="repair the store (snapshots first, never deletes memories)")
     fix.add_argument("path")
     fix.add_argument("--dry-run", action="store_true")
     fix.add_argument("--quarantine-dir", default=None)
@@ -74,8 +74,25 @@ if __name__ == "__main__":  # pragma: no cover
 
 
 def _cmd_fix(args: argparse.Namespace) -> int:
-    print("error: `fix` is not implemented in this step; only `check` is available.", file=sys.stderr)
-    return 2
+    backend = _resolve_backend(args.path, args.backend)
+    if backend == "json":
+        print(
+            "error: automatic repairs are not available for the JSON backend in v0.1; "
+            "nothing was modified.",
+            file=sys.stderr,
+        )
+        return 2
+    if backend != "sqlite":
+        raise BackendError(f"fix is not supported for backend: {backend}")
+
+    from .fix import repair_sqlite
+
+    return repair_sqlite(
+        args.path,
+        dry_run=args.dry_run,
+        quarantine_dir=args.quarantine_dir,
+        dimension=args.dim,
+    )
 
 
 def _resolve_backend(path: str, backend: str) -> str:
