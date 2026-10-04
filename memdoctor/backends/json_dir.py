@@ -16,6 +16,14 @@ from ..model import Issue, Memory, Severity
 from .base import BackendError, MemoryStore
 
 
+_MEMDOCTOR_ARTIFACT_MARKER = ".memdoctor-"
+
+
+def _is_memdoctor_artifact(name: str) -> bool:
+    """Return True for memdoctor's own output files (backups, quarantine)."""
+    return _MEMDOCTOR_ARTIFACT_MARKER in name
+
+
 def _id_str(value: object) -> str | None:
     if value is None:
         return None
@@ -51,7 +59,9 @@ class JsonDirStore(MemoryStore):
             files = sorted(
                 f
                 for f in p.iterdir()
-                if f.is_file() and f.suffix.lower() in {".json", ".jsonl"}
+                if f.is_file()
+                and f.suffix.lower() in {".json", ".jsonl"}
+                and not _is_memdoctor_artifact(f.name)
             )
         elif p.is_file():
             files = [p]

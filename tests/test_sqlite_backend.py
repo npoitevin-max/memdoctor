@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import struct
 from pathlib import Path
@@ -216,6 +217,28 @@ def test_detect_backend_directory(tmp_path):
     build_clean(store_dir)
     assert detect_sqlite(store_dir) is True
     assert detect_backend(store_dir) == "sqlite"
+
+
+def test_detect_backend_prefers_sqlite_over_unrelated_json(tmp_path):
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    build_clean(store_dir)
+    (store_dir / "notes.jsonl").write_text("", encoding="utf-8")
+    assert detect_backend(store_dir) == "sqlite"
+
+
+def test_detect_backend_prefers_sqlite_over_quarantine(tmp_path, capsys):
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    build_clean(store_dir)
+    (store_dir / "memories.db.memdoctor-quarantine.jsonl").write_text("", encoding="utf-8")
+    assert detect_backend(store_dir) == "sqlite"
+
+    code = main(["check", "--json", str(store_dir)])
+    report = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert report["backend"] == "sqlite"
+    assert report["counts"]["memories"] == 2
 
 
 def test_backend_sqlite_flag(clean, capsys):

@@ -124,6 +124,24 @@ def test_fix_does_not_change_memory_row_count(fixable, capsys):
     assert _memory_count(fixable) == before
 
 
+def test_round_trip_directory_resolves_to_sqlite(tmp_path, capsys):
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    build_fixable(store_dir)
+
+    code = main(["check", str(store_dir)])
+    assert code == 1
+
+    code = main(["fix", str(store_dir)])
+    assert code == 0
+
+    code = main(["check", str(store_dir)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "sqlite backend" in out
+    assert "no issues found" in out
+
+
 # -- quarantine ---------------------------------------------------------
 
 

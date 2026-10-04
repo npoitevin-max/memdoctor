@@ -86,6 +86,27 @@ def test_jsonl_backend_parses(tmp_path):
     assert "orphaned_vector" not in codes
 
 
+def test_json_backend_ignores_memdoctor_artifacts(tmp_path):
+    store = write_json_store(tmp_path, {"memories.json": [memory("a", embedding=[1.0, 2.0])]})
+    (store / "memories.memdoctor-quarantine.jsonl").write_text(
+        json.dumps({"id": "x"}) + "\n", encoding="utf-8"
+    )
+    (store / "memories.memdoctor-backup-2024-01-01T000000000000Z.jsonl").write_text(
+        json.dumps({"id": "y"}) + "\n", encoding="utf-8"
+    )
+    s = JsonDirStore(store)
+    assert s.stats()["memories"] == 1
+    assert run_checks(s.iter_memories()) == []
+
+
+def test_explicit_json_backend_ignores_db(tmp_path, capsys):
+    store = write_json_store(tmp_path, {"m.json": [memory("a", embedding=[1.0, 2.0])]})
+    (store / "data.db").write_bytes(b"")
+    code, out, _ = run_cli(capsys, "check", "--backend", "json", str(store))
+    assert code == 0
+    assert "json backend" in out
+
+
 # -- clean store / false positives --------------------------------------
 
 

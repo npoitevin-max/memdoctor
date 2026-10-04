@@ -42,27 +42,44 @@ class MemoryStore(ABC):
         return []
 
 
+def _has_json_files(p: Path) -> bool:
+    """Return True when ``p`` is a directory containing ``.json``/``.jsonl`` files."""
+    if not p.is_dir():
+        return False
+    suffixes = {f.suffix.lower() for f in p.iterdir() if f.is_file()}
+    return bool(suffixes & {".json", ".jsonl"})
+
+
 def detect_backend(path: str | os.PathLike[str]) -> str:
     """Infer the backend from the path.
 
-    A directory containing ``.json``/``.jsonl`` files is a JSON store. Anything
-    else is handed to the SQLite detector, which is imported lazily so that the
-    JSON backend keeps working when ``sqlite-vec`` is not installed.
+    SQLite is preferred: a directory is first offered to the SQLite detector and
+    only falls back to the JSON backend when no sqlite-vec store is present.
+    ``detect_sqlite`` is imported lazily so the JSON backend keeps working when
+    ``sqlite-vec`` is not installed.
     """
     p = Path(path)
     if not p.exists():
         raise BackendError(f"path does not exist: {p}")
-    if p.is_dir():
-        suffixes = {f.suffix.lower() for f in p.iterdir() if f.is_file()}
-        if suffixes & {".json", ".jsonl"}:
-            return "json"
+
     try:
         from .sqlite_vec import detect_sqlite
-    except ImportError as exc:
+    except ImportError:  # pragma: no cover - the module handles its own import
+        detect_sqlite = None
+
+    if detect_sqlite is not None:
+        try:
+            if detect_sqlite(p):
+                return "sqlite"
+        except BackendError:
+            pass
+
+    if _has_json_files(p):
+        return "json"
+
+    if detect_sqlite is None:
         raise BackendError(
             f"cannot detect backend for {p}: no .json/.jsonl memory files found "
-            f"and the SQLite backend is not available ({exc})"
-        ) from exc
-    if detect_sqlite(p):
-        return "sqlite"
+            f"and the SQLite backend is not available"
+        )
     raise BackendError(f"cannot detect backend for {p}: unrecognised store layout")
