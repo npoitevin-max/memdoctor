@@ -119,4 +119,4 @@ The through-line: **agents fail silently, so your instrumentation has to be the 
 
 ---
 
-*I build and run agent fleets, and I got tired of there being no tool for class #1, so I'm building one — `memdoctor`, an integrity checker and repairer for agent memory stores. It's early and it's MIT licensed. If you've hit a failure mode that isn't on this list, I want to hear about it more than I want to hear agreement.*
+*I build and run agent fleets, and I got tired of there being no tool for class #1, so I'm building one — `memdoctor`, an integrity checker and repairer for agent memory stores. It's early and it's public domain. If you've hit a failure mode that isn't on this list, I want to hear about it more than I want to hear agreement.*

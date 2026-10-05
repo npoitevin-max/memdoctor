@@ -77,7 +77,7 @@ memdoctor/checks.py     # D1-D5, backend-agnostic over a normalised MemoryStore 
 memdoctor/fix.py        # repair planner + executor + backup
 tests/                  # as above, plus fixtures builder
 README.md               # already written - do not rewrite
-LICENSE                 # MIT
+LICENSE                 # The Unlicense (public domain)
 ```
 
 ## Out of scope for v0.1

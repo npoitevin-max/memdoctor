@@ -8,13 +8,13 @@ version = "0.1.0"
 description = "Check and repair AI agent long-term memory stores"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "Unlicense" }
 authors = [{ name = "Silent Failures" }]
 keywords = ["ai-agents", "llm", "agent-memory", "vector-database", "sqlite-vec", "observability"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: The Unlicense (Unlicense)",
     "Programming Language :: Python :: 3",
     "Topic :: Database",
     "Topic :: Software Development :: Quality Assurance",

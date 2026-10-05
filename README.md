@@ -96,7 +96,7 @@ memdoctor fix ./memory/ --dry-run    # show what would change
 
 v0.1, early. Built because running agent fleets in production makes this problem impossible to ignore — and because none of the memory frameworks diagnose or repair their own store.
 
-MIT licensed.
+Public domain — released under [The Unlicense](https://unlicense.org/).
 
 ## Contributing
 
