@@ -1,0 +1,45 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  # Trusted Publishing (OIDC) requires id-token: write; contents: read is the
+  # minimum needed for actions/checkout.
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # This value must match the environment name configured on PyPI as the
+    # trusted publisher's environment: use "pypi".
+    environment: pypi
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install build tooling and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine ".[sqlite-vec]"
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Check distributions
+        run: python -m twine check dist/*
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
