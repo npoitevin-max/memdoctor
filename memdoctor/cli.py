@@ -76,12 +76,14 @@ if __name__ == "__main__":  # pragma: no cover
 def _cmd_fix(args: argparse.Namespace) -> int:
     backend = _resolve_backend(args.path, args.backend)
     if backend == "json":
-        print(
-            "error: automatic repairs are not available for the JSON backend in v0.1; "
-            "nothing was modified.",
-            file=sys.stderr,
+        from .fix import repair_json
+
+        return repair_json(
+            args.path,
+            dry_run=args.dry_run,
+            quarantine_dir=args.quarantine_dir,
+            dimension=args.dim,
         )
-        return 2
     if backend != "sqlite":
         raise BackendError(f"fix is not supported for backend: {backend}")
 
@@ -194,7 +196,16 @@ def _print_human(report: Report) -> None:
     if total == 0:
         emit("  no issues found")
     else:
-        emit(
-            f"  {total} issue(s) found in {report.duration_ms / 1000.0:.1f}s. "
-            f"Run `memdoctor fix {report.store}/` to repair."
-        )
+        from .fix import _is_repairable
+
+        repairable = any(_is_repairable(i, report.backend) for i in report.issues)
+        if repairable:
+            emit(
+                f"  {total} issue(s) found in {report.duration_ms / 1000.0:.1f}s. "
+                f"Run `memdoctor fix {report.store}/` to repair."
+            )
+        else:
+            emit(
+                f"  {total} issue(s) found in {report.duration_ms / 1000.0:.1f}s. "
+                f"None of these are automatically repairable in v0.1."
+            )

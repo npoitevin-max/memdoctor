@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .backends.base import BackendError
+from .backends.json_dir import JsonDirStore, _is_memdoctor_artifact
 from .backends.sqlite_vec import (
     _MISSING_MSG,
     _candidate_memory_tables,
@@ -252,6 +253,19 @@ def _report_only_issues(issues: list[Issue]) -> list[Issue]:
     return out
 
 
+def _is_repairable(issue: Issue, backend: str) -> bool:
+    """Return True when ``issue`` is a class that ``fix`` can repair for ``backend``."""
+    if issue.code == "degenerate_vector":
+        return True
+    if (
+        backend == "sqlite"
+        and issue.code == "orphaned_vector"
+        and issue.detail == "vector row has no matching memory row"
+    ):
+        return True
+    return False
+
+
 def _print_result(
     db: Path,
     plan: Plan,
@@ -345,3 +359,283 @@ def _load_store(db: Path):
     from .backends.sqlite_vec import SqliteVecStore
 
     return SqliteVecStore(db)
+
+
+# -- JSON / JSONL backend ------------------------------------------------
+#
+# In the JSON backend a "vector" is the ``embedding`` field on a memory object,
+# so the only repairable class is ``degenerate_vector``. Everything else is
+# report-only and never modified.
+
+
+_DEGENERATE_REASON = "embedding is all-zero, non-finite, or has zero norm"
+
+
+@dataclass
+class JsonMutation:
+    """A single planned embedding removal in the JSON backend."""
+
+    code: str
+    id: str | None
+    embedding: list[float]
+    reason: str
+
+    def quarantine_line(self, ts: str) -> str:
+        return json.dumps(
+            {
+                "ts": ts,
+                "code": self.code,
+                "id": self.id,
+                "embedding": self.embedding,
+                "reason": self.reason,
+            },
+            separators=(",", ":"),
+        )
+
+
+@dataclass
+class JsonPlan:
+    """Files to rewrite and the degenerate embeddings to remove."""
+
+    files: list[Path]
+    mutations: list[JsonMutation]
+
+
+def _json_store_files(store: Path) -> list[Path]:
+    if store.is_dir():
+        return sorted(
+            f
+            for f in store.iterdir()
+            if f.is_file()
+            and f.suffix.lower() in {".json", ".jsonl"}
+            and not _is_memdoctor_artifact(f.name)
+        )
+    if store.is_file():
+        return [store]
+    raise BackendError(f"not a directory or file: {store}")
+
+
+def _degenerate_embedding(obj: dict) -> list[float] | None:
+    """Return ``obj``'s embedding when it is degenerate, else ``None``."""
+    value = obj.get("embedding")
+    if not isinstance(value, (list, tuple)):
+        return None
+    try:
+        embedding = [float(x) for x in value]
+    except (TypeError, ValueError):
+        return None
+    if _is_degenerate(embedding):
+        return embedding
+    return None
+
+
+def _rewrite_object(obj: dict) -> None:
+    """Remove a degenerate ``embedding`` and mark the object unembedded."""
+    obj.pop("embedding", None)
+    for key in ("embedded", "has_embedding"):
+        if key in obj and obj[key]:
+            obj[key] = False
+
+
+def _json_mutation(obj: dict, embedding: list[float]) -> JsonMutation:
+    return JsonMutation(
+        code="degenerate_vector",
+        id=_id_str(obj.get("id")),
+        embedding=embedding,
+        reason=_DEGENERATE_REASON,
+    )
+
+
+def _scan_json(raw: str) -> list[JsonMutation]:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    mutations: list[JsonMutation] = []
+    for obj in data:
+        if not isinstance(obj, dict):
+            continue
+        embedding = _degenerate_embedding(obj)
+        if embedding is not None:
+            mutations.append(_json_mutation(obj, embedding))
+    return mutations
+
+
+def _scan_jsonl(raw: str) -> list[JsonMutation]:
+    mutations: list[JsonMutation] = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        embedding = _degenerate_embedding(obj)
+        if embedding is not None:
+            mutations.append(_json_mutation(obj, embedding))
+    return mutations
+
+
+def _plan_json(store: Path) -> JsonPlan:
+    files: list[Path] = []
+    mutations: list[JsonMutation] = []
+    for f in _json_store_files(store):
+        try:
+            raw = f.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        found = _scan_jsonl(raw) if f.suffix.lower() == ".jsonl" else _scan_json(raw)
+        if found:
+            files.append(f)
+            mutations.extend(found)
+    return JsonPlan(files=files, mutations=mutations)
+
+
+def _snapshot_json_files(files: list[Path]) -> list[Path]:
+    """Copy every file about to change; abort and clean up on any failure."""
+    stamp = _backup_stamp()
+    backups: list[Path] = []
+    try:
+        for f in files:
+            backup = f.with_name(f"{f.name}.memdoctor-backup-{stamp}")
+            shutil.copyfile(f, backup)
+            backups.append(backup)
+    except OSError as exc:
+        for b in backups:
+            _remove_if_exists(b)
+        raise BackendError(f"cannot write backup snapshot: {exc}") from exc
+    return backups
+
+
+def _quarantine_json_path(store: Path, quarantine_dir: str | None) -> Path:
+    name = f"{store.name}.memdoctor-quarantine.jsonl"
+    if quarantine_dir:
+        return Path(quarantine_dir) / name
+    return store.with_name(name)
+
+
+def _write_json_quarantine(path: Path, mutations: list[JsonMutation]) -> None:
+    ts = _utc_now().isoformat(timespec="microseconds")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            for mutation in mutations:
+                fh.write(mutation.quarantine_line(ts) + "\n")
+    except OSError as exc:
+        raise BackendError(f"cannot write quarantine file {path}: {exc}") from exc
+
+
+def _rewrite_json(raw: str) -> str:
+    data = json.loads(raw)
+    for obj in data:
+        if isinstance(obj, dict) and _degenerate_embedding(obj) is not None:
+            _rewrite_object(obj)
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _rewrite_jsonl(data: bytes) -> bytes:
+    out: list[bytes] = []
+    for line in data.splitlines(keepends=True):
+        content = line.rstrip(b"\r\n")
+        eol = line[len(content) :]
+        try:
+            obj = json.loads(content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            out.append(line)
+            continue
+        if not isinstance(obj, dict) or _degenerate_embedding(obj) is None:
+            out.append(line)
+            continue
+        _rewrite_object(obj)
+        new_content = json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        out.append(new_content + eol)
+    return b"".join(out)
+
+
+def _apply_json_files(files: list[Path]) -> None:
+    for f in files:
+        if f.suffix.lower() == ".jsonl":
+            f.write_bytes(_rewrite_jsonl(f.read_bytes()))
+        else:
+            f.write_text(_rewrite_json(f.read_text(encoding="utf-8")), encoding="utf-8")
+
+
+def _print_json_result(
+    store: Path,
+    plan: JsonPlan,
+    report_only: list[Issue],
+    backups: list[Path] | None,
+    quarantine: Path | None,
+    dry_run: bool,
+) -> None:
+    print("memdoctor fix — json backend")
+    print(f"  store        {store}")
+    if dry_run:
+        print("  (dry run — no writes performed)")
+    else:
+        if backups:
+            for backup in backups:
+                print(f"  backup       {backup}")
+        if quarantine is not None:
+            print(f"  quarantine   {quarantine}")
+    print()
+
+    if plan.mutations:
+        for mutation in plan.mutations:
+            verb = "would remove" if dry_run else "removed"
+            print(f"  {verb} {mutation.code:<20} id={mutation.id}  {mutation.reason}")
+            uverb = "would mark unembedded" if dry_run else "marked unembedded"
+            print(f"  {uverb:<22} id={mutation.id}  no vector remains; needs re-embedding")
+    else:
+        print("  nothing to repair")
+    print()
+
+    if report_only:
+        print("  not automatically repairable:")
+        for issue in report_only:
+            print(f"    {issue.code} id={issue.id}  {issue.detail}")
+    else:
+        print("  no other issues found")
+
+
+def repair_json(
+    path: str | Path,
+    *,
+    dry_run: bool = False,
+    quarantine_dir: str | None = None,
+    dimension: int | None = None,
+) -> int:
+    store = Path(path).resolve()
+    json_store = JsonDirStore(store)
+    issues = run_checks(
+        json_store.iter_memories(),
+        dimension=dimension,
+        orphan_vector_ids=json_store.orphan_vector_ids(),
+    )
+    report_only = _report_only_issues(issues)
+
+    plan = _plan_json(store)
+
+    if not plan.mutations:
+        _print_json_result(store, plan, report_only, None, None, dry_run)
+        return 0
+
+    if dry_run:
+        _print_json_result(store, plan, report_only, None, None, dry_run)
+        return 0
+
+    backups = _snapshot_json_files(plan.files)
+    quarantine = _quarantine_json_path(store, quarantine_dir)
+    _write_json_quarantine(quarantine, plan.mutations)
+    try:
+        _apply_json_files(plan.files)
+    except BaseException:
+        _remove_if_exists(quarantine)
+        raise
+
+    _print_json_result(store, plan, report_only, backups, quarantine, dry_run)
+    return 0

@@ -13,7 +13,8 @@ import pytest
 
 sqlite_vec = pytest.importorskip("sqlite_vec")
 
-from fixtures import memory, write_json_store
+from fixtures import memory, write_json_store, write_jsonl_store
+from memdoctor.backends.json_dir import JsonDirStore
 from memdoctor.cli import main
 
 
@@ -332,9 +333,190 @@ def test_fix_without_embedded_column_still_fixes(tmp_path, capsys):
 # -- json backend -------------------------------------------------------
 
 
-def test_fix_json_reports_no_automatic_repairs(tmp_path, capsys):
-    store = write_json_store(tmp_path, {"m.json": [memory("a", embedding=[1.0, 2.0])]})
+def test_fix_json_round_trip_and_convergence(tmp_path, capsys):
+    store = write_json_store(
+        tmp_path,
+        {
+            "m.json": [
+                memory("a", embedding=[0.0, 0.0, 0.0]),
+                memory("b", embedding=[1.0, 2.0, 3.0]),
+            ]
+        },
+    )
     code = main(["fix", str(store)])
-    captured = capsys.readouterr()
+    assert code == 0
+
+    check_code = main(["check", str(store)])
+    out = capsys.readouterr().out
+    assert check_code == 0
+    assert "no issues found" in out
+
+    mems = {m.id: m for m in JsonDirStore(store).iter_memories()}
+    assert mems["a"].embedding is None
+    assert mems["a"].embedded is False
+    assert mems["b"].embedding == [1.0, 2.0, 3.0]
+
+    code = main(["fix", str(store)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "nothing to repair" in out
+
+
+def test_fix_json_marks_embedded_degenerate_unembedded(tmp_path, capsys):
+    store = write_json_store(
+        tmp_path,
+        {
+            "m.json": [
+                memory("c", embedding=[0.0, 0.0], embedded=True),
+                memory("fine", embedding=[1.0, 2.0]),
+            ]
+        },
+    )
+    code = main(["fix", str(store)])
+    assert code == 0
+
+    objs = json.loads((store / "m.json").read_text())
+    assert "embedding" not in objs[0]
+    assert objs[0]["embedded"] is False
+    assert objs[0]["id"] == "c"
+    assert objs[0]["content"] == "hello"
+
+    check_code = main(["check", str(store)])
+    out = capsys.readouterr().out
+    assert check_code == 0
+    assert "no issues found" in out
+
+
+def test_fix_json_writes_quarantine(tmp_path, capsys):
+    store = write_json_store(tmp_path, {"m.json": [memory("a", embedding=[0.0, 0.0])]})
+    code = main(["fix", str(store)])
+    assert code == 0
+
+    q = store.parent / f"{store.name}.memdoctor-quarantine.jsonl"
+    lines = [json.loads(line) for line in q.read_text().splitlines()]
+    assert len(lines) == 1
+    entry = lines[0]
+    assert set(entry) == {"ts", "code", "id", "embedding", "reason"}
+    assert entry["code"] == "degenerate_vector"
+    assert entry["id"] == "a"
+    assert entry["embedding"] == [0.0, 0.0]
+
+
+def test_fix_json_creates_backup(tmp_path, capsys):
+    store = write_json_store(tmp_path, {"m.json": [memory("a", embedding=[0.0, 0.0])]})
+    before = (store / "m.json").read_bytes()
+    code = main(["fix", str(store)])
+    assert code == 0
+    backups = sorted(store.glob("*.memdoctor-backup-*"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == before
+
+
+def test_fix_json_dry_run_leaves_store_byte_identical(tmp_path, capsys):
+    store = write_json_store(
+        tmp_path,
+        {
+            "m.json": [
+                memory("a", embedding=[0.0, 0.0]),
+                memory("b", embedding=[1.0, 2.0]),
+            ]
+        },
+    )
+
+    def digest() -> str:
+        h = hashlib.sha256()
+        for f in sorted(store.iterdir()):
+            h.update(f.name.encode())
+            h.update(f.read_bytes())
+        return h.hexdigest()
+
+    before = digest()
+    code = main(["fix", "--dry-run", str(store)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "would remove" in out
+    assert digest() == before
+    assert list(store.glob("*.memdoctor-backup-*")) == []
+    assert not (store.parent / f"{store.name}.memdoctor-quarantine.jsonl").exists()
+
+
+def test_fix_json_aborts_when_snapshot_cannot_be_written(tmp_path, capsys):
+    store = write_json_store(tmp_path, {"m.json": [memory("a", embedding=[0.0, 0.0])]})
+
+    def digest() -> str:
+        h = hashlib.sha256()
+        for f in sorted(store.iterdir()):
+            h.update(f.name.encode())
+            h.update(f.read_bytes())
+        return h.hexdigest()
+
+    before = digest()
+    os.chmod(store, 0o555)
+    try:
+        code = main(["fix", str(store)])
+    finally:
+        os.chmod(store, 0o755)
     assert code == 2
-    assert "not available" in captured.err
+    assert digest() == before
+    assert list(store.glob("*.memdoctor-backup-*")) == []
+
+
+def test_fix_json_report_only_issues_never_modified(tmp_path, capsys):
+    store = write_json_store(
+        tmp_path,
+        {
+            "m.json": [
+                memory("dup", content="first"),
+                memory("dup", content="second"),
+                memory("missing", content=None),
+            ]
+        },
+    )
+    before = (store / "m.json").read_text()
+    code = main(["fix", str(store)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "nothing to repair" in out
+    assert "not automatically repairable" in out
+    assert "duplicate_id" in out
+    assert "missing_field" in out
+    assert (store / "m.json").read_text() == before
+
+
+def test_fix_jsonl_rewrites_only_affected_lines(tmp_path, capsys):
+    store = write_jsonl_store(
+        tmp_path,
+        {
+            "m.jsonl": [
+                memory("a", embedding=[0.0, 0.0]),
+                memory("b", embedding=[1.0, 2.0]),
+                memory("c"),
+            ]
+        },
+    )
+    path = store / "m.jsonl"
+    before_lines = path.read_bytes().splitlines(keepends=True)
+    code = main(["fix", str(store)])
+    assert code == 0
+    after_lines = path.read_bytes().splitlines(keepends=True)
+    assert after_lines[0] != before_lines[0]
+    assert b"embedding" not in after_lines[0]
+    assert after_lines[1] == before_lines[1]
+    assert after_lines[2] == before_lines[2]
+
+
+def test_check_hint_suppressed_for_report_only_json(tmp_path, capsys):
+    store = write_json_store(tmp_path, {"m.json": [memory("dup"), memory("dup")]})
+    code = main(["check", str(store)])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "Run `memdoctor fix" not in out
+    assert "None of these are automatically repairable" in out
+
+
+def test_check_hint_present_for_repairable_json(tmp_path, capsys):
+    store = write_json_store(tmp_path, {"m.json": [memory("a", embedding=[0.0, 0.0])]})
+    code = main(["check", str(store)])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "Run `memdoctor fix" in out
