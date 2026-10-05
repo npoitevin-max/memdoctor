@@ -9,7 +9,7 @@ description = "Check and repair AI agent long-term memory stores"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Nicolas Poitevin" }]
+authors = [{ name = "Silent Failures" }]
 keywords = ["ai-agents", "llm", "agent-memory", "vector-database", "sqlite-vec", "observability"]
 classifiers = [
     "Development Status :: 3 - Alpha",
