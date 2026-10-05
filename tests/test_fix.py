@@ -330,6 +330,113 @@ def test_fix_without_embedded_column_still_fixes(tmp_path, capsys):
     assert check_code == 0
 
 
+# -- multiple vector rows per id ----------------------------------------
+
+
+def build_mixed_vector_rows(root: Path) -> Path:
+    """A memory with one valid and one degenerate vector row (same id)."""
+    db = root / "memories.db"
+    conn = sqlite3.connect(str(db))
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.execute("CREATE VIRTUAL TABLE vec_memories USING vec0(id TEXT, embedding FLOAT[4])")
+    conn.execute("CREATE TABLE memories (id TEXT, content TEXT, created_at TEXT, embedded INTEGER)")
+    conn.execute(
+        "INSERT INTO memories (id, content, created_at, embedded) VALUES (?, ?, ?, ?)",
+        ("m2", "mixed memory", "2024-01-01T00:00:00Z", 1),
+    )
+    conn.execute(
+        "INSERT INTO vec_memories (id, embedding) VALUES (?, ?)",
+        ("m2", _vec_blob([1.0, 2.0, 3.0, 4.0])),
+    )
+    conn.execute(
+        "INSERT INTO vec_memories (id, embedding) VALUES (?, ?)",
+        ("m2", _vec_blob([0.0, 0.0, 0.0, 0.0])),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def build_single_degenerate(root: Path) -> Path:
+    """A memory whose only vector row is degenerate (embedded = 1)."""
+    db = root / "memories.db"
+    conn = sqlite3.connect(str(db))
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.execute("CREATE VIRTUAL TABLE vec_memories USING vec0(id TEXT, embedding FLOAT[4])")
+    conn.execute("CREATE TABLE memories (id TEXT, content TEXT, created_at TEXT, embedded INTEGER)")
+    conn.execute(
+        "INSERT INTO memories (id, content, created_at, embedded) VALUES (?, ?, ?, ?)",
+        ("c", "degenerate memory", "2024-01-01T00:00:00Z", 1),
+    )
+    conn.execute(
+        "INSERT INTO vec_memories (id, embedding) VALUES (?, ?)",
+        ("c", _vec_blob([0.0, 0.0, 0.0, 0.0])),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def _assert_self_consistent(db: Path) -> None:
+    conn = sqlite3.connect(str(db))
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    try:
+        vec_ids = {row[0] for row in conn.execute("SELECT id FROM vec_memories").fetchall()}
+        for mem_id, embedded in conn.execute("SELECT id, embedded FROM memories").fetchall():
+            has_vector = mem_id in vec_ids
+            assert bool(embedded) == has_vector, (mem_id, embedded, has_vector)
+    finally:
+        conn.close()
+
+
+def test_fix_keeps_valid_vector_and_embedded_flag_when_other_vector_remains(
+    tmp_path, capsys
+):
+    db = build_mixed_vector_rows(tmp_path)
+    code = main(["fix", str(db)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "embedded flag left alone" in out
+
+    conn = sqlite3.connect(str(db))
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    rows = conn.execute("SELECT embedding FROM vec_memories WHERE id = 'm2'").fetchall()
+    conn.close()
+    assert len(rows) == 1
+    assert list(struct.unpack("<4f", rows[0][0])) == [1.0, 2.0, 3.0, 4.0]
+
+    assert _embedded_value(db, "m2") == 1
+    _assert_self_consistent(db)
+
+    check_code = main(["check", str(db)])
+    out = capsys.readouterr().out
+    assert check_code == 0
+    assert "no issues found" in out
+
+
+def test_fix_single_degenerate_vector_removes_row_and_clears_embedded(tmp_path, capsys):
+    db = build_single_degenerate(tmp_path)
+    code = main(["fix", str(db)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "marked unembedded" in out
+
+    conn = sqlite3.connect(str(db))
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM vec_memories WHERE id = 'c'"
+    ).fetchone()[0]
+    conn.close()
+    assert count == 0
+    assert _embedded_value(db, "c") == 0
+    _assert_self_consistent(db)
+
+
 # -- json backend -------------------------------------------------------
 
 

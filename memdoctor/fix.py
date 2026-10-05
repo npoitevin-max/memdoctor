@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -81,6 +82,7 @@ class Plan:
     mem_table: str
     has_embedded: bool
     mutations: list[Mutation]
+    unembed_ids: set[str]
 
 
 def _utc_now() -> datetime:
@@ -141,12 +143,15 @@ def _plan(db: Path) -> Plan:
         }
 
         mutations: list[Mutation] = []
+        vec_row_count: Counter[str] = Counter()
+        degenerate_count: Counter[str] = Counter()
         for rowid, vid, blob in conn.execute(
             f"SELECT rowid, id, embedding FROM {_quote_ident(vec_name)}"
         ).fetchall():
             key = _id_str(vid)
             if key is None:
                 continue
+            vec_row_count[key] += 1
             if key not in mem_ids:
                 mutations.append(
                     Mutation(
@@ -169,11 +174,18 @@ def _plan(db: Path) -> Plan:
                         reason="embedding is all-zero, non-finite, or has zero norm",
                     )
                 )
+                degenerate_count[key] += 1
+        unembed_ids = {
+            key
+            for key, count in degenerate_count.items()
+            if vec_row_count[key] == count
+        }
         return Plan(
             vec_table=vec_name,
             mem_table=mem_table,
             has_embedded=has_embedded,
             mutations=mutations,
+            unembed_ids=unembed_ids,
         )
     finally:
         conn.close()
@@ -212,7 +224,14 @@ def _delete_rows(
     mem_table: str,
     has_embedded: bool,
     mutations: list[Mutation],
-) -> None:
+) -> set[str]:
+    """Delete the planned vector rows and clear ``embedded`` only when none remain.
+
+    Returns the set of memory ids whose ``embedded`` flag was actually cleared,
+    so callers can report truthfully. The decision is made after the deletions,
+    inside the same transaction, so it reflects the post-delete state.
+    """
+    cleared: set[str] = set()
     conn = _open_rw(db)
     try:
         conn.execute("BEGIN")
@@ -222,17 +241,30 @@ def _delete_rows(
                     f"DELETE FROM {_quote_ident(vec_name)} WHERE rowid = ?",
                     (mutation.rowid,),
                 )
-                if has_embedded and mutation.code == "degenerate_vector":
-                    conn.execute(
-                        f"UPDATE {_quote_ident(mem_table)} SET embedded = 0 WHERE id = ?",
-                        (mutation.vec_id,),
-                    )
+            if has_embedded:
+                ids = {
+                    mutation.vec_id
+                    for mutation in mutations
+                    if mutation.code == "degenerate_vector" and mutation.vec_id is not None
+                }
+                for vec_id in ids:
+                    remaining = conn.execute(
+                        f"SELECT COUNT(*) FROM {_quote_ident(vec_name)} WHERE id = ?",
+                        (vec_id,),
+                    ).fetchone()[0]
+                    if remaining == 0:
+                        conn.execute(
+                            f"UPDATE {_quote_ident(mem_table)} SET embedded = 0 WHERE id = ?",
+                            (vec_id,),
+                        )
+                        cleared.add(vec_id)
         except BaseException:
             conn.execute("ROLLBACK")
             raise
         conn.execute("COMMIT")
     finally:
         conn.close()
+    return cleared
 
 
 def _remove_if_exists(path: Path) -> None:
@@ -273,7 +305,10 @@ def _print_result(
     backup: Path | None,
     quarantine: Path | None,
     dry_run: bool,
+    cleared_ids: set[str] | None = None,
 ) -> None:
+    if cleared_ids is None:
+        cleared_ids = plan.unembed_ids
     print("memdoctor fix — sqlite backend")
     print(f"  store        {db}")
     if dry_run:
@@ -294,11 +329,18 @@ def _print_result(
             )
             if mutation.code == "degenerate_vector":
                 if plan.has_embedded:
-                    uverb = "would mark unembedded" if dry_run else "marked unembedded"
-                    print(
-                        f"  {uverb:<22} id={mutation.vec_id}  "
-                        f"no vector remains; needs re-embedding"
-                    )
+                    if mutation.vec_id in cleared_ids:
+                        uverb = "would mark unembedded" if dry_run else "marked unembedded"
+                        print(
+                            f"  {uverb:<22} id={mutation.vec_id}  "
+                            f"no vector remains; needs re-embedding"
+                        )
+                    else:
+                        kverb = "would keep remaining vector" if dry_run else "kept remaining vector"
+                        print(
+                            f"  {kverb:<22} id={mutation.vec_id}  "
+                            f"another vector row remains; embedded flag left alone"
+                        )
                 else:
                     print("  (memory table has no `embedded` column; flag not updated)")
     else:
@@ -344,14 +386,14 @@ def repair_sqlite(
     quarantine = _quarantine_path(db, quarantine_dir)
     _write_quarantine(quarantine, plan.mutations)
     try:
-        _delete_rows(
+        cleared = _delete_rows(
             db, plan.vec_table, plan.mem_table, plan.has_embedded, plan.mutations
         )
     except BaseException:
         _remove_if_exists(quarantine)
         raise
 
-    _print_result(db, plan, report_only, backup, quarantine, dry_run)
+    _print_result(db, plan, report_only, backup, quarantine, dry_run, cleared)
     return 0
 
 
