@@ -28,6 +28,7 @@ Issues = "https://github.com/npoitevin-max/memdoctor/issues"
 
 [project.optional-dependencies]
 sqlite-vec = ["sqlite-vec"]
+test = ["pytest"]
 
 [project.scripts]
 memdoctor = "memdoctor.cli:main"
